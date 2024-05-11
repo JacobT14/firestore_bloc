@@ -1,20 +1,18 @@
 import 'dart:async';
 
 import 'package:bloc/bloc.dart';
+import 'package:firestore_bloc/src/firestore_document_bloc/firestore_document_state.dart';
 import 'package:firestore_bloc/src/repositories/firestore_repository.dart';
 import 'package:firestore_doc/firestore_doc.dart';
 
-import '../../firestore_bloc.dart';
-import 'bloc.dart';
-
-class FirestoreDocumentBloc<T extends FirestoreDocument>
-    extends Bloc<FirestoreDocumentEvent, FirestoreDocumentState<T>> {
+class FirestoreDocumentCubit<T extends FirestoreDocument>
+    extends Cubit<FirestoreDocumentState<T>> {
   final FirestoreRepository<T> collectionRepo;
   StreamSubscription _documentSubscription;
   FirestoreDocumentPath documentPath;
   FirestoreCollectionPath parentCollectionPath;
 
-  FirestoreDocumentBloc(this.collectionRepo, this.parentCollectionPath,
+  FirestoreDocumentCubit(this.collectionRepo, this.parentCollectionPath,
       {this.documentPath, FirestoreDocumentState<T> initialState})
       : super(
             initialState ?? FirestoreDocumentUninitializedState(documentPath));
@@ -25,45 +23,25 @@ class FirestoreDocumentBloc<T extends FirestoreDocument>
     return super.close();
   }
 
-  @override
-  Stream<FirestoreDocumentState<T>> mapEventToState(
-      FirestoreDocumentEvent event) async* {
-    if (event is FirestoreDocumentLoadRequestedEvent) {
-      yield loading(event.documentPath);
-      return;
-    }
-    if (event is FirestoreDocumentUpdateRequestedEvent<T>) {
-      yield updating(event.document);
-      return;
-    }
-    if (event is FirestoreDocumentLoadedEvent<T>) {
-      yield loaded(event.document);
-      return;
-    }
-    if (event is FirestoreDocumentLoadFailedEvent) {
-      yield loadFailed(event.error, event.documentPath);
-      return;
-    }
-    if (event is FirestoreDocumentDeletedEvent) {
-      yield deleted();
-      return;
-    }
-  }
-
   void _subscribeToDocumentChanges(FirestoreDocumentPath path) {
     _documentSubscription?.cancel();
     _documentSubscription = collectionRepo.documentSnapshots(path).listen(
       (document) {
         if (document != null) {
-          add(FirestoreDocumentLoadedEvent<T>(document));
+          emit(loaded(document));
         } else {
-          add(FirestoreDocumentLoadFailedEvent(
-              "document not found", documentPath));
+          emit(loadFailed("document not found", documentPath));
         }
       },
-      onError: (e) => add(FirestoreDocumentLoadFailedEvent(e, documentPath)),
+      onError: (e) {
+        emit(loadFailed(e, documentPath));
+      },
     );
   }
+
+  FirestoreDocumentUninitializedState<T> uninitialized(
+          FirestoreDocumentPath documentId) =>
+      FirestoreDocumentUninitializedState(documentId);
 
   FirestoreDocumentLoadingState<T> loading(FirestoreDocumentPath documentId) =>
       FirestoreDocumentLoadingState(documentId);
@@ -82,7 +60,7 @@ class FirestoreDocumentBloc<T extends FirestoreDocument>
 
   void load() {
     assert(documentPath != null);
-    add(FirestoreDocumentLoadRequestedEvent(documentPath));
+    emit(loading(documentPath));
     _subscribeToDocumentChanges(documentPath);
   }
 
@@ -106,7 +84,7 @@ class FirestoreDocumentBloc<T extends FirestoreDocument>
     assert(document.path == documentPath, "updated document doesn't match");
     try {
       _documentSubscription?.cancel(); // prevent updates until we're done
-      add(FirestoreDocumentUpdateRequestedEvent(document));
+      emit(updating(document));
       await collectionRepo.updateDocument(
         document,
         merge: merge,
@@ -128,9 +106,8 @@ class FirestoreDocumentBloc<T extends FirestoreDocument>
     final FirestoreDocumentLoadedState<T> loadedState = state;
     try {
       _documentSubscription?.cancel();
-      add(FirestoreDocumentDeleteRequestedEvent(loadedState.document));
       await collectionRepo.deleteDocument(documentPath);
-      add(FirestoreDocumentDeletedEvent());
+      emit(deleted());
     } catch (e) {
       // reconnect to the document changes on error
       _subscribeToDocumentChanges(loadedState.document.path);
